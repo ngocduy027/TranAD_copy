@@ -1,0 +1,10 @@
+﻿# Core runtime deps for TranAD on synthetic
+numpy
+pandas
+tqdm
+matplotlib
+scikit-learn
+scipy
+SciencePlots
+# PyTorch (install via step 2 in setup.txt, or leave here for CPU wheels)
+torch

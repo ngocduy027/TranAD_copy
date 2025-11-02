@@ -1,0 +1,39 @@
+﻿TranAD (synthetic + TranAD) – Ubuntu Setup
+
+Prerequisites
+- Python 3.9+ installed (python3 --version)
+- Git/zip to transfer this folder to the machine
+
+1) Create and activate a virtual environment
+- cd /path/to/TranAD_copy
+- python3 -m venv .venv
+- source .venv/bin/activate
+- python -m pip install -U pip setuptools wheel
+
+2) Install PyTorch
+Choose ONE of the following:
+- CPU only:
+  pip install torch
+- NVIDIA GPU (CUDA 12.1):
+  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+3) Install required Python packages
+- pip install -r requirements.txt
+
+4) (Headless servers) Avoid display issues
+- export MPLBACKEND=Agg
+
+5) Run on synthetic data with TranAD
+- python main.py --model TranAD --dataset synthetic --retrain
+
+Outputs
+- Checkpoints: checkpoints/TranAD_synthetic/model.ckpt
+- Plots: plots/TranAD_synthetic/
+
+Optional extras (only if needed)
+- Graph models (GDN, MTAD_GAT): pip install dgl
+- MBA dataset (Excel): pip install xlrd==1.2.0
+
+Troubleshooting
+- If matplotlib complains about display or libGL: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+- If SciPy build errors occur, ensure pip is recent (see step 1). On older environments you may need: pip install "scipy<1.12"
