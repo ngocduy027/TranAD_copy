@@ -12,47 +12,12 @@ from src.merlin import *
 from src.roc_plot import plot_roc, plot_roc_per_dim
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import torch
-import platform
 import torch.nn as nn
 from time import time
 from pprint import pprint
 # from beepy import beep
 
-# Device: use CUDA if available; default to CPU
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.backends.cudnn.enabled = False
-# Disable flash/mem-efficient SDPA if CUDA shows kernel issues
-try:
-    from torch.backends.cuda import sdp_kernel
-    sdp_kernel.enable_flash(False)
-    sdp_kernel.enable_mem_efficient(False)
-    sdp_kernel.enable_math(True)
-except Exception:
-    pass
-try:
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-except Exception:
-    pass
-
-# Memory-safe dataset that yields sliding windows lazily (no precompute)
-class WindowedDataset(Dataset):
-    def __init__(self, sequence: torch.Tensor, window: int):
-        self.sequence = sequence
-        self.window = int(window)
-
-    def __len__(self):
-        return self.sequence.shape[0]
-
-    def __getitem__(self, idx: int):
-        w = self.window
-        s = self.sequence
-        if idx >= w:
-            win = s[idx - w: idx]
-        else:
-            pad = s[0:1].repeat(w - idx, 1)
-            win = torch.cat([pad, s[0:idx]], dim=0)
-        return win, win
+# CPU-only execution
 
 def convert_to_windows(data, model):
 	windows = []; w_size = model.n_window
@@ -95,41 +60,16 @@ def save_model(model, optimizer, scheduler, epoch, accuracy_list):
 def load_model(modelname, dims):
     import src.models
     model_class = getattr(src.models, modelname)
-    # Use FP32 + GPU for TranAD family; preserve FP64 CPU for others
-    is_tranad = ('TranAD' in modelname)
-    model = model_class(dims)
-    if is_tranad:
-        model = model.float().to(device)
-    else:
-        model = model.double()
+    model = model_class(dims).double()
     optimizer = torch.optim.AdamW(model.parameters() , lr=model.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 5, 0.9)
     fname = f'checkpoints/{args.model}_{args.dataset}/model.ckpt'
     if os.path.exists(fname) and (not args.retrain or args.test):
         print(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
-        # Load checkpoint on CPU to be safe; then map to desired dtype/device
-        checkpoint = torch.load(fname, map_location='cpu')
-        try:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        except Exception:
-            # If dtype mismatch (old FP64 ckpt) and model is FP32, cast weights
-            try:
-                state_dict = checkpoint['model_state_dict']
-                state_dict = {k: (v.float() if torch.is_tensor(v) else v) for k, v in state_dict.items()}
-                model.load_state_dict(state_dict)
-            except Exception:
-                print(f"{color.RED}Warning: checkpoint dtype mismatch. Starting fresh model.{color.ENDC}")
-                epoch = -1; accuracy_list = []
-                return model, optimizer, scheduler, epoch, accuracy_list
-        # Move model after loading if needed
-        if is_tranad:
-            model = model.to(device)
-        # Optimizer/scheduler: best-effort load; ignore if dtype mismatch
-        try:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        except Exception:
-            pass
+        checkpoint = torch.load(fname)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         epoch = checkpoint['epoch']
         accuracy_list = checkpoint['accuracy_list']
     else:
@@ -314,44 +254,17 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 			return loss.detach().numpy(), y_pred.detach().numpy()
 	elif 'TranAD' in model.name:
 		l = nn.MSELoss(reduction = 'none')
-		# Keep base sequence on CPU; build windows lazily to avoid large allocations
-		data_x = torch.as_tensor(data, dtype=torch.float32)
-		w_size = model.n_window
-		if data_x.dim() == 2:
-			# Raw sequence [T, F] -> lazy windowed samples [w, F]
-			dataset = WindowedDataset(data_x, w_size)
-		else:
-			# Already windowed [N, w, F]
-			dataset = TensorDataset(data_x, data_x)
-		# Use mini-batches for both train and eval to limit peak memory
-		bs = model.batch
-		# pin_memory not needed since tensors are already on device; also safer on Windows
-		dataloader = DataLoader(dataset, batch_size=bs, pin_memory=False, num_workers=0)
+		data_x = torch.DoubleTensor(data); dataset = TensorDataset(data_x, data_x)
+		bs = model.batch if training else len(data)
+		dataloader = DataLoader(dataset, batch_size = bs)
 		n = epoch + 1; w_size = model.n_window
 		l1s, l2s = [], []
 		if training:
 			for d, _ in dataloader:
-				# d already on device
-				# Align batch tensor device with model
-				model_dev = next(model.parameters()).device
-				if d.device != model_dev:
-					d = d.to(model_dev, non_blocking=True)
 				local_bs = d.shape[0]
-				window = d.permute(1, 0, 2).contiguous()
-				elem = window[-1, :, :].contiguous().view(1, local_bs, feats)
-				try:
-					z = model(window, elem)
-				except RuntimeError as e:
-					if 'CUDA error' in str(e):
-						print(f"{color.RED}CUDA error in attention path. Falling back to CPU for stability.{color.ENDC}")
-						model.to('cpu')
-						window_cpu = window.to('cpu')
-						elem_cpu = elem.to('cpu')
-						z = model(window_cpu, elem_cpu)
-						# keep tensors on CPU from now on
-						device_switch = 'cpu'
-					else:
-						raise
+				window = d.permute(1, 0, 2)
+				elem = window[-1, :, :].view(1, local_bs, feats)
+				z = model(window, elem)
 				l1 = l(z, elem) if not isinstance(z, tuple) else (1 / n) * l(z[0], elem) + (1 - 1/n) * l(z[1], elem)
 				if isinstance(z, tuple): z = z[1]
 				l1s.append(torch.mean(l1).item())
@@ -364,27 +277,12 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 			return np.mean(l1s), optimizer.param_groups[0]['lr']
 		else:
 			for d, _ in dataloader:
-				# d already on device
-				# Align batch tensor device with model
-				model_dev = next(model.parameters()).device
-				if d.device != model_dev:
-					d = d.to(model_dev, non_blocking=True)
-				window = d.permute(1, 0, 2).contiguous()
-				elem = window[-1, :, :].contiguous().view(1, bs, feats)
-				try:
-					z = model(window, elem)
-				except RuntimeError as e:
-					if 'CUDA error' in str(e):
-						print(f"{color.RED}CUDA error in attention path. Falling back to CPU for stability.{color.ENDC}")
-						model.to('cpu')
-						window_cpu = window.to('cpu')
-						elem_cpu = elem.to('cpu')
-						z = model(window_cpu, elem_cpu)
-					else:
-						raise
+				window = d.permute(1, 0, 2)
+				elem = window[-1, :, :].view(1, bs, feats)
+				z = model(window, elem)
 				if isinstance(z, tuple): z = z[1]
 			loss = l(z, elem)[0]
-			return loss.detach().cpu().numpy(), z.detach().cpu().numpy()[0]
+			return loss.detach().numpy(), z.detach().numpy()[0]
 	else:
 		y_pred = model(data)
 		loss = l(y_pred, data)
@@ -403,17 +301,11 @@ if __name__ == '__main__':
 	if args.model in ['MERLIN']:
 		eval(f'run_{args.model.lower()}(test_loader, labels, args.dataset)')
 	model, optimizer, scheduler, epoch, accuracy_list = load_model(args.model, labels.shape[1])
-# Allow CLI to override batch size if provided
-if hasattr(args, 'batch') and args.batch:
-    try:
-        model.batch = int(args.batch)
-    except Exception:
-        pass
 
 	## Prepare data
 	trainD, testD = next(iter(train_loader)), next(iter(test_loader))
 	trainO, testO = trainD, testD
-	if model.name in ['Attention', 'DAGMM', 'USAD', 'MSCRED', 'CAE_M', 'GDN', 'MTAD_GAT', 'MAD_GAN']:
+	if model.name in ['Attention', 'DAGMM', 'USAD', 'MSCRED', 'CAE_M', 'GDN', 'MTAD_GAT', 'MAD_GAN'] or 'TranAD' in model.name: 
 		trainD, testD = convert_to_windows(trainD, model), convert_to_windows(testD, model)
 
 	### Training phase
@@ -464,5 +356,3 @@ if hasattr(args, 'batch') and args.batch:
 	pprint(result)
 	# pprint(getresults2(df, result))
 	# beep(4)
-
-

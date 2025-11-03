@@ -52,70 +52,25 @@ Optional extras (only if needed)
 - Graph models (GDN, MTAD_GAT): pip install dgl
 - MBA dataset (Excel): pip install xlrd==1.2.0
 
-6) Transfer datasets with rclone (optional)
-- Why: Move large folders like `processed/` or `data/` between your machine and server without committing them to Git.
+6) Download datasets from Google Drive (gdown)
+- Why: Pull large folders like `processed/` or `data/` directly from Drive without committing them to Git.
 
-- Install rclone (Ubuntu)
-  - sudo apt-get update && sudo apt-get install -y rclone
-  - If repo version is old: curl -fsSL https://rclone.org/install.sh | sudo bash
+- Install gdown (inside your virtualenv)
+  - python -m pip install gdown
 
-- (Optional) Install rclone (Windows)
-  - winget install rclone.rclone  (or)  choco install rclone
-
-- Configure a Google Drive remote
-  - rclone config
-  - n (New remote) -> name: drive
-  - Storage: drive
-  - Scope: 1 (Full access) or 2 (Files created by rclone). 1 is simplest.
-  - Edit advanced config? n
-  - Use auto config? n (on headless servers). Open the shown URL on your local machine, authorize, paste the verification code back into the terminal.
-  - Configure as a team drive? n (unless you use Shared Drives)
-  - y to save.
-
-- Verify access
-  - rclone ls drive:        # should list files, or be empty on first use
-  - rclone mkdir drive:tranad
-
-- Upload processed data to Drive
-  - rclone copy processed/synthetic drive:tranad/processed/synthetic \
-      --progress --transfers 8 --checkers 16 --fast-list
-
-- Download processed data from Drive to this machine
-  - rclone copy drive:tranad/processed/synthetic processed/synthetic \
-      --progress --transfers 8 --checkers 16 --fast-list
-
- - Download the provided Google Drive folder (link)
+- Download the provided Google Drive folder into the repository root
   - Link: https://drive.google.com/drive/folders/1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB?usp=sharing
-  - Folder ID: 1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB
-  - Run this inside the repository root to mirror the Drive folder directly into this directory (no extra parent folder).
-  - Option A (recommended): use your configured `drive` remote and the folder ID
-    - rclone copy drive: . \
-        --drive-root-folder-id 1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB \
-        --progress --transfers 8 --checkers 16 --fast-list
-  - Option B: create a dedicated remote bound to that folder
-    - rclone config create drive_link drive scope=drive.readonly root_folder_id=1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB
-    - rclone copy drive_link: . --progress --transfers 8 --checkers 16 --fast-list
-  - Option C (alternative tool): gdown (creates a parent folder; not recommended if you need a flat merge)
-    - python -m pip install gdown
-    - gdown --folder "https://drive.google.com/drive/folders/1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB?usp=sharing" -O .
-    - (Linux) To flatten after download: identify the created folder name, then run: mv -t . "<DriveFolderName>"/* && rmdir "<DriveFolderName>"
+  - Run inside the repo root:
+    - gdown --fuzzy --folder "https://drive.google.com/drive/folders/1LECaDWPOU0TZ7mOUCeVR2bPPBnDjk-qB?usp=sharing" -O .
+  - This creates a directory named after the Drive folder in the current directory.
 
-- Notes
-  - Commands are resumable. Re-run to continue partial transfers.
-  - Replace `processed/synthetic` with any folder (e.g., `data/SMD`).
-  - rclone config is stored at ~/.config/rclone/rclone.conf (do not commit this file).
+- Flatten so there is no extra parent folder (optional)
+  - Replace <DriveFolderName> with the folder name created by gdown.
+  - mv "<DriveFolderName>"/* . && rmdir "<DriveFolderName>"
 
-- (Alternative) Configure an S3 remote
-  - rclone config
-  - n -> name: s3
-  - Storage: s3
-  - Provider: 1 (Amazon S3) [or your provider]
-  - Enter AWS Access Key ID / Secret Access Key (or choose IAM role if on EC2)
-  - Region: your region (e.g., us-east-1). Endpoint: leave empty for AWS.
-  - Save.
-  - Upload:   rclone copy processed/synthetic s3:your-bucket/processed/synthetic --progress
-  - Download: rclone copy s3:your-bucket/processed/synthetic processed/synthetic --progress
-
-Troubleshooting
-- If matplotlib complains about display or libGL: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+- Tips
+  - Re-run the gdown command to resume interrupted downloads.
+  - Use `-O data` to put the downloaded folder under `data/` instead of repo root.
+et/processed/synthetic processed/synthetic --progress
+pt-get update && sudo apt-get install -y libgl1 libglib2.0-0
 - If SciPy build errors occur, ensure pip is recent (see step 1). On older environments you may need: pip install "scipy<1.12"
