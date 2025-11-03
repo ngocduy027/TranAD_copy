@@ -22,4 +22,8 @@ parser.add_argument('--retrain',
 parser.add_argument('--less', 
 					action='store_true', 
 					help="train using less data")
+parser.add_argument('--batch',
+                    type=int,
+                    default=None,
+                    help="override batch size (default from model)")
 args = parser.parse_args()
